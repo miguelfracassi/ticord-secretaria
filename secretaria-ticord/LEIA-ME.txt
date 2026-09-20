@@ -1,0 +1,13 @@
+SECRETARIA TICORD
+=================
+
+Como usar
+1. Extraia a pasta do zip.
+2. Abra o arquivo index.html com um clique duplo (funciona em qualquer navegador).
+
+Paginas: Inicio, Cadastro, Fila, Anotacoes, Painel, Setores e Historico.
+
+Importante
+- Nesta versao para baixar, os dados ficam salvos apenas no navegador deste computador.
+- Para varios aparelhos verem a mesma fila (por exemplo, o painel numa TV), use a versao online.
+- Nao precisa de internet nem de instalacao.
