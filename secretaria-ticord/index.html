@@ -227,6 +227,13 @@
   .note p { margin: 4px 0 0; font-size: 14.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .note .acts { display: flex; gap: 8px; margin-top: auto; padding-top: 10px; }
 
+  /* sync page */
+  .steps { padding-left: 20px; margin: 0 0 6px; }
+  .steps li { margin: 8px 0; }
+  pre.code { background: var(--tint); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 13px; overflow-x: auto; margin: 8px 0 0; }
+  .warn { border: 1px solid var(--wait-border); background: var(--wait-bg); color: var(--wait); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; margin: 18px 0; }
+  .foot-btn { border: 0; background: none; padding: 0; color: inherit; text-align: left; }
+
   .toast {
     position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
     background: var(--text); color: var(--bg); padding: 11px 18px; border-radius: 12px; font-size: 14px; font-weight: 550; z-index: 30;
@@ -241,7 +248,7 @@
       <span><b>Ticord</b><small>Secretaria</small></span>
     </button>
     <nav id="nav"></nav>
-    <div class="side-foot"><span class="sync" id="sync"><i></i><span>Neste navegador</span></span></div>
+    <div class="side-foot"><button class="foot-btn" data-go="sync" aria-label="Sincronização"><span class="sync" id="sync"><i></i><span>Neste navegador</span></span></button></div>
   </aside>
   <main id="app"></main>
 </div>
@@ -256,7 +263,10 @@
   var filaSetor = "todos";
   var cadSetor = "";
   var histStatus = "todos", histSetor = "todos", histQ = "";
-  var mode = "local", col = null, colN = null;
+  var LS_SYNC = "ticord-secretaria-sync-url";
+  var remoteUrl = (function () { try { return localStorage.getItem(LS_SYNC) || ""; } catch (e) { return ""; } })();
+  var remoteOk = null, lastSig = "";
+  var mode = remoteUrl ? "remote" : "local", col = null, colN = null;
   var LS_KEY_N = "ticord-secretaria-anotacoes";
   var notas = [], notaEdit = null, notaSetor = "", notaQ = "", notaFiltro = "todos", apagando = null;
 
@@ -279,6 +289,7 @@
     trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
+    sync: '<path d="M21 12a9 9 0 0 1-15.5 6.2L3 16M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M3 21v-5h5"/>',
     eraser: '<path d="M20 20H9l-5-5a2 2 0 0 1 0-2.8L13 3.4a2 2 0 0 1 2.8 0l4.8 4.8a2 2 0 0 1 0 2.8L12 19.6"/><path d="M8 11l5 5"/>'
   };
   function ic(n) { return '<svg class="i" viewBox="0 0 24 24" aria-hidden="true">' + ICONS[n] + "</svg>"; }
@@ -321,6 +332,30 @@
   function gravarLocalN() { try { localStorage.setItem(LS_KEY_N, JSON.stringify(notas)); } catch (e) {} }
   notas = lerLocalN();
 
+  /* ---------- nuvem (Firebase Realtime Database via REST) ---------- */
+  function fb(method, path, body) {
+    var opt = { method: method };
+    if (body !== undefined) { opt.headers = { "Content-Type": "application/json" }; opt.body = JSON.stringify(body); }
+    return fetch(remoteUrl + "/" + path + ".json", opt).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+  function objParaLista(o) { return o ? Object.keys(o).map(function (k) { return Object.assign({ id: k }, o[k]); }) : []; }
+  function listaParaObj(l) { var o = {}; l.forEach(function (x) { o[x.id] = x; }); return o; }
+  function falhaRemota(msg) { remoteOk = false; renderNav(); toast(msg); }
+  function puxar() {
+    if (mode !== "remote") return;
+    Promise.all([fb("GET", "visitas"), fb("GET", "anotacoes")]).then(function (r) {
+      var v = objParaLista(r[0]), n = objParaLista(r[1]);
+      var sig = JSON.stringify([v, n]);
+      var mudouStatus = remoteOk !== true;
+      remoteOk = true;
+      if (sig !== lastSig) { lastSig = sig; visitas = v; notas = n; render(); }
+      else if (mudouStatus) renderNav();
+    }).catch(function () { if (remoteOk !== false) { remoteOk = false; renderNav(); } });
+  }
+
   function salvarNota(n) {
     if (mode === "db" && colN) {
       return colN.doc(n.id).set(n).catch(function (e) { console.error(e); toast("Não foi possível salvar a anotação."); });
@@ -328,6 +363,9 @@
     var achou = false;
     notas = notas.map(function (x) { if (x.id === n.id) { achou = true; return n; } return x; });
     if (!achou) notas.push(n);
+    if (mode === "remote") {
+      return fb("PUT", "anotacoes/" + n.id, n).then(puxar).catch(function () { falhaRemota("Sem conexão: anotação não sincronizada."); });
+    }
     gravarLocalN();
     return Promise.resolve();
   }
@@ -336,6 +374,9 @@
       return colN.doc(id).delete().catch(function (e) { console.error(e); toast("Não foi possível apagar."); });
     }
     notas = notas.filter(function (x) { return x.id !== id; });
+    if (mode === "remote") {
+      return fb("DELETE", "anotacoes/" + id).then(puxar).catch(function () { falhaRemota("Sem conexão: exclusão não sincronizada."); });
+    }
     gravarLocalN();
     return Promise.resolve();
   }
@@ -344,7 +385,12 @@
     if (mode === "db" && col) {
       return col.doc(v.id).set(v).catch(function (e) { console.error(e); toast("Não foi possível salvar. Tente de novo."); });
     }
-    visitas.push(v); gravarLocal(); render();
+    visitas.push(v);
+    if (mode === "remote") {
+      render();
+      return fb("PUT", "visitas/" + v.id, v).then(puxar).catch(function () { falhaRemota("Sem conexão: cadastro não sincronizado."); });
+    }
+    gravarLocal(); render();
     return Promise.resolve();
   }
   function atualizar(id, patch) {
@@ -353,6 +399,10 @@
       return col.doc(id).update(patch).catch(function (e) { console.error(e); toast("Não foi possível atualizar."); });
     }
     visitas = visitas.map(function (v) { return v.id === id ? Object.assign({}, v, patch) : v; });
+    if (mode === "remote") {
+      render();
+      return fb("PATCH", "visitas/" + id, patch).then(puxar).catch(function () { falhaRemota("Sem conexão: alteração não sincronizada."); });
+    }
     gravarLocal(); render();
     return Promise.resolve();
   }
@@ -382,7 +432,7 @@
         render();
       }, function (err) {
         console.error(err);
-        mode = "local"; col = null; visitas = lerLocal(); render();
+        mode = remoteUrl ? "remote" : "local"; col = null; visitas = lerLocal(); render();
       });
     }).catch(function () {});
   }
@@ -600,19 +650,83 @@
     });
   }
 
+  /* ---------- sincronização (página) ---------- */
+  function telaSync() {
+    var h = "<h1>Sincronização</h1>";
+    if (mode === "db") {
+      h += '<p class="lead">Nesta versão online, cadastros, fila e anotações já sincronizam automaticamente entre todos os computadores da organização. Não é preciso configurar nada.</p>';
+      return h;
+    }
+    h += '<p class="lead">Para que todos os computadores vejam a mesma fila e as mesmas anotações, conecte o site a um banco gratuito na nuvem. Leva cerca de 5 minutos e é feito uma vez.</p>';
+    h += '<div class="card" style="max-width:720px">';
+    if (remoteUrl) {
+      h += '<div class="chips" style="margin-bottom:14px"><span class="pill">' + (remoteOk === false ? "Sem conexão com a nuvem" : "Conectado à nuvem") + "</span></div>";
+      h += '<label class="f" style="margin-top:0">Endereço do banco</label><div class="inp" style="overflow-wrap:anywhere">' + esc(remoteUrl) + "</div>";
+      h += '<div class="btns" style="margin-top:16px"><button class="btn line" data-act="desconectar">Desconectar deste computador</button></div>';
+    } else {
+      h += '<ol class="steps">';
+      h += "<li>Acesse <b>console.firebase.google.com</b>, entre com uma conta Google e crie um projeto (é gratuito).</li>";
+      h += "<li>No menu, abra <b>Realtime Database</b> e clique em <b>Criar banco de dados</b>.</li>";
+      h += "<li>Na aba <b>Regras</b>, cole o texto abaixo e clique em <b>Publicar</b>:<pre class=\"code\">{ \"rules\": { \".read\": true, \".write\": true } }</pre></li>";
+      h += "<li>Copie o endereço do banco (começa com <b>https://</b> e termina em <b>firebasedatabase.app</b> ou <b>firebaseio.com</b>) e cole abaixo.</li>";
+      h += "<li>Repita este passo, com o mesmo endereço, em cada computador que for usar o site.</li>";
+      h += "</ol>";
+      h += '<div class="warn">Com essas regras, quem tiver o endereço do banco consegue ler e alterar os dados, que incluem nome, telefone e e-mail dos visitantes. Não divulgue o endereço.</div>';
+      h += '<label class="f" for="syncUrl">Endereço do banco</label><input class="inp" id="syncUrl" type="text" autocomplete="off" autocapitalize="off" placeholder="https://seu-projeto-default-rtdb.firebaseio.com">';
+      h += '<div class="err" id="syncErr"></div>';
+      h += '<div class="btns"><button class="btn" data-act="conectar">Conectar</button></div>';
+    }
+    h += "</div>";
+    return h;
+  }
+  function conectar() {
+    var el = document.getElementById("syncUrl"), err = document.getElementById("syncErr");
+    var u = el.value.trim().replace(/\.json.*$/, "").replace(/\/+$/, "");
+    if (!/^https:\/\/[^\s\/]+$/.test(u)) { err.textContent = "Cole o endereço do banco, começando com https://"; return; }
+    err.style.color = "var(--muted)"; err.textContent = "Testando conexão...";
+    var anterior = remoteUrl;
+    remoteUrl = u;
+    fb("GET", "visitas").then(function (r) {
+      var envios = [];
+      if (!r) {
+        if (visitas.length) envios.push(fb("PATCH", "visitas", listaParaObj(visitas)));
+        if (notas.length) envios.push(fb("PATCH", "anotacoes", listaParaObj(notas)));
+      }
+      return Promise.all(envios);
+    }).then(function () {
+      try { localStorage.setItem(LS_SYNC, u); } catch (e) {}
+      mode = "remote"; remoteOk = true; lastSig = "";
+      toast("Conectado à nuvem");
+      puxar();
+      ir("home");
+    }).catch(function () {
+      remoteUrl = anterior;
+      err.style.color = "var(--no)";
+      err.textContent = "Não consegui conectar. Confira o endereço e se as regras do banco foram publicadas.";
+    });
+  }
+  function desconectar() {
+    try { localStorage.removeItem(LS_SYNC); } catch (e) {}
+    remoteUrl = ""; mode = "local"; remoteOk = null; lastSig = "";
+    visitas = lerLocal(); notas = lerLocalN();
+    render(true);
+  }
+
   /* ---------- render ---------- */
-  var NAV = [["home", "Início", "home"], ["cadastro", "Cadastro", "userPlus"], ["fila", "Fila", "users"], ["anotacoes", "Anotações", "note"], ["painel", "Painel", "monitor"], ["setores", "Setores", "building"], ["historico", "Histórico", "clock"]];
+  var NAV = [["home", "Início", "home"], ["cadastro", "Cadastro", "userPlus"], ["fila", "Fila", "users"], ["anotacoes", "Anotações", "note"], ["painel", "Painel", "monitor"], ["setores", "Setores", "building"], ["historico", "Histórico", "clock"], ["sync", "Sincronização", "sync"]];
   function renderNav() {
     document.getElementById("nav").innerHTML = NAV.map(function (n) {
       return '<button data-go="' + n[0] + '" class="' + (view === n[0] ? "on" : "") + '">' + ic(n[2]) + "<span>" + n[1] + "</span></button>";
     }).join("");
     var s = document.getElementById("sync");
-    s.className = "sync" + (mode === "db" ? " live" : "");
-    s.lastChild.textContent = mode === "db" ? "Sincronizado" : "Somente neste navegador";
+    var ativo = mode === "db" || (mode === "remote" && remoteOk !== false);
+    s.className = "sync" + (ativo ? " live" : "");
+    s.lastChild.textContent = mode === "db" ? "Sincronizado" : mode === "remote" ? (remoteOk === false ? "Sem conexão com a nuvem" : "Sincronizado na nuvem") : "Somente neste navegador";
   }
   function render(force) {
     renderNav();
     // não recria telas com campos em edição quando chegam dados novos
+    if (!force && view === "sync" && document.getElementById("syncUrl")) return;
     if (!force && view === "cadastro" && document.getElementById("nome")) return;
     if (!force && view === "anotacoes" && document.getElementById("notasList")) {
       document.getElementById("notasList").innerHTML = linhasNotas();
@@ -623,7 +737,7 @@
       return;
     }
     var app = document.getElementById("app");
-    app.innerHTML = ({ home: telaHome, cadastro: telaCadastro, fila: telaFila, anotacoes: telaAnotacoes, painel: telaPainel, setores: telaSetores, historico: telaHistorico })[view]();
+    app.innerHTML = ({ home: telaHome, cadastro: telaCadastro, fila: telaFila, anotacoes: telaAnotacoes, painel: telaPainel, setores: telaSetores, historico: telaHistorico, sync: telaSync })[view]();
     if (view === "cadastro") { var el = document.getElementById("nome"); if (el) el.focus(); }
   }
   function ir(v) { view = v; render(); window.scrollTo(0, 0); }
@@ -695,6 +809,8 @@
     }
     if (d.act === "salvarnota") { salvarNotaForm(); return; }
     if (d.act === "cancelarnota") { notaEdit = null; notaSetor = ""; render(true); return; }
+    if (d.act === "conectar") { conectar(); return; }
+    if (d.act === "desconectar") { desconectar(); return; }
     if (d.act === "limpar") { limparPainel(); return; }
     if (d.act === "enviar") enviar();
   });
@@ -716,17 +832,21 @@
     }
   });
   document.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && e.target && e.target.id === "syncUrl") { e.preventDefault(); conectar(); return; }
     if (e.key === "Enter" && e.target && (e.target.id === "nome" || e.target.id === "tel" || e.target.id === "email")) { e.preventDefault(); enviar(); }
   });
   window.addEventListener("storage", function (e) {
     if (e.key === LS_KEY && mode === "local") { visitas = lerLocal(); render(); }
   });
+  setInterval(puxar, 3000);
+  window.addEventListener("focus", puxar);
   setInterval(function () {
     var c = document.getElementById("clock");
     if (c) c.textContent = hora(Date.now());
   }, 15000);
 
   render();
+  puxar();
   iniciarDb();
 })();
 </script>
